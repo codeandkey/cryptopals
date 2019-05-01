@@ -24,14 +24,18 @@ set2.pad_pkcs7 = (b, block_size) => {
     let num_bytes = b.length % block_size;
     let pad = [b];
 
-    if (num_bytes > 0 || b.length == 0) {
-        num_bytes = block_size - num_bytes; /* right-align padding boundary */
-        let padbuf = Buffer.allocUnsafe(num_bytes);
-        padbuf.fill(num_bytes);
-        pad.push(padbuf);
-    }
+    num_bytes = block_size - num_bytes; /* right-align padding boundary */
+    let padbuf = Buffer.allocUnsafe(num_bytes);
+    padbuf.fill(num_bytes);
+    pad.push(padbuf);
 
     return Buffer.concat(pad);
+};
+
+set2.unpad_pkcs7 = (b) => {
+    /* read the last byte, and remove that many bytes from the end */
+    let len = b[b.length - 1];
+    return b.slice(0, -len);
 };
 
 set2.tests.push(() => {
@@ -97,7 +101,7 @@ set2.cbc_decrypt = (ct, key, iv) => {
         pt_blocks.push(pt_block);
     }
 
-    return Buffer.concat(pt_blocks);
+    return set2.unpad_pkcs7(Buffer.concat(pt_blocks));
 }
 
 set2.tests.push(() => {
@@ -245,8 +249,6 @@ set2.crack_oracle_2 = (oracle) => {
         }
     }
 
-    console.log('deduced block size ' + block_size);
-
     /* with the block size known, we verify that the cipher is in ECB mode.
      * this is very straightforward, we inject two identical plaintext blocks
      * and then check the ciphertext */
@@ -259,36 +261,99 @@ set2.crack_oracle_2 = (oracle) => {
         throw 'Oracle is not encrypting in ECB mode!';
     }
 
-    console.log('detected ecb mode');
+    /*
+     * the oracle attack works by injecting plaintext blocks of varying length to
+     * influence the block boundaries. we can also encrypt arbitrary plaintexts using
+     * the hidden key -- this allows us to retrieve one byte at a time using the
+     * block boundary to reduce the brute-force complexity for 1 byte to 2^8.
+     */
 
-    /* our decryption function works because we can keep the original ciphertext
-     * and use it to compare against some clever inputs to the oracle.
-     *
-     * we can extract a single byte at a time by constructing a lookup table for each
-     * ciphertext position.
-     *
-     * as we collect the hidden bytes we need to reuse them to collect more.
-     *
-     * slowly but surely scan through the ciphertext! */
-
-    let result = [];
-    let dict = {};
-
-    let cur_block = Buffer.alloc(block_size);
-    let out_buf = Buffer.alloc(0);
+    let last_block = Buffer.alloc(block_size);
+    let output = Buffer.alloc(0);
     let target_block = 0;
     let num_blocks = ctlen / block_size;
 
-    console.log('cracking ' + num_blocks + ' blocks');
+    process.stdout.write('deciphering plaintext: ');
 
-    while (target_block < ctlen) {
+    for (let block = 0; block < num_blocks; ++block) {
         /* attack the ith block of the ciphertext */
-        let 
+        let inject_block = Buffer.alloc(block_size);
+        let cracked_block = Buffer.alloc(0);
+
+        for (let i = 0; i < block_size; ++i) {
+            /* drop a byte from the injecting block */
+            inject_block = inject_block.slice(1);
+
+            /* 
+             * construct the dictionary for the last byte
+             * the dictionary should be all of the data (of length block_size - 1)
+             * IMMEDIATELY before the target byte.
+             * fortunately at this point we already know all of those bytes!
+             * take all of the bytes we've cracked so far, append them to the previous block.
+             * then shorten the left side until it matches block_size - 1
+             */
+
+            let dict_input_prefix = Buffer.concat([last_block, cracked_block]).slice(1 - block_size);
+            let dict = {};
+
+            for (let b = 0; b < 256; ++b) {
+                let dict_building_input = Buffer.concat([dict_input_prefix, Buffer.from([b])]);
+                let dict_building_output = oracle(dict_building_input).slice(0, block_size).toString('hex');
+
+                dict[dict_building_output] = b;
+            }
+
+            /*
+             * now with the dictionary, we just need to inject some input and
+             * keep the output. the values of our inject block only matter for the first
+             * target block. for all of the others, we already know the plaintext --
+             * only the length matters so we can influence the boundary locations.
+             *
+             * we CAN'T use the dict input prefix as the injecting block because it will always
+             * be the same length. here we can just know that our injected values will always be 0x00
+             * and set the initial value of last_block accordingly.
+             */
+
+            let block_result = oracle(inject_block).slice(block_size * block, block_size * (block + 1));
+            let byte_result = dict[block_result.toString('hex')];
+
+            if (typeof byte_result === 'undefined') {
+                /* 
+                 * if no dictionary matches, we have read past the last block.
+                 * this will always happen towards the end due to the padding changing
+                 * while we are cracking bytes. fortunately, the last padding byte will always be a 0x1
+                 * immediately before the first dictionary failure. we can just stop here and let the unpadding
+                 * process continue as normal, stripping off the last byte.
+                 */
+
+                break;
+            }
+
+            /* we stole a byte! push it to the cracked block */
+            cracked_block = Buffer.concat([cracked_block, Buffer.from([byte_result])]);
+
+            process.stdout.write(Buffer.from([byte_result]).toString());
+        }
+
+        /* block has been completely revealed! concatenate it with the output */
+        output = Buffer.concat([output, cracked_block]);
+
+        /* store it in last_block so we can use it for the next dictionary attack */
+        last_block = cracked_block;
     }
+
+    process.stdout.write('\n');
+
+    return set2.unpad_pkcs7(output);
 };
 
 set2.tests.push(() => {
     let res = set2.crack_oracle_2(set2.encryption_oracle_2);
+    let expected = 'Um9sbGluJyBpbiBteSA1LjAKV2l0aCBteSByYWctdG9wIGRvd24gc28gbXkgaGFp' +
+                   'ciBjYW4gYmxvdwpUaGUgZ2lybGllcyBvbiBzdGFuZGJ5IHdhdmluZyBq' +
+                   'dXN0IHRvIHNheSBoaQpEaWQgeW91IHN0b3A/IE5vLCBJIGp1c3QgZHJvdmUgYnkK';
+
+    assert.equal(res.toString('base64'), expected);
 });
 
 module.exports = set2;
