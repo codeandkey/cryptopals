@@ -356,4 +356,41 @@ set2.tests.push(() => {
     assert.equal(res.toString('base64'), expected);
 });
 
+/*
+ * 2.13 - ECB cut-and-paste
+ */
+
+set2.profile_for = (email) => {
+    /* don't allow user to inject their own keys */
+    email = email.replace('&', '');
+    email = email.replace('=', '');
+
+    /* construct the encoding */
+    return 'email=' + email + '&uid=10&role=user';
+};
+
+set2.parse_profile = (s) => {
+    let keys = s.split('&');
+    let out = {};
+
+    keys.forEach(k => {
+        let pair = k.split('=');
+
+        if (pair.length != 2) {
+            throw 'Invalid profile key ' + k + ' in ' + s;
+        }
+
+        out[pair[0]] = pair[1];
+    });
+
+    return out;
+};
+
+/* need another random key for 2.13 */
+set2.s2_13_key = Buffer.alloc(16);
+crypto.randomFillSync(set2.s2_13_key);
+
+set2.encrypt_profile = (p) => {
+}
+
 module.exports = set2;
