@@ -7,9 +7,11 @@ let assert = require('assert');
 let fs     = require('fs');
 
 let set1 = require('./set1.js');
+let set2 = require('./set2.js');
 
 let testsets = [
     set1.tests,
+    set2.tests
 ];
 
 console.log('starting cryptopals tests..');

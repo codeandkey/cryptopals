@@ -301,12 +301,14 @@ set1.hamming_distance = (a, b) => {
 
 set1.ecb_encrypt = (pt, key) => {
     let cip = crypto.createCipheriv('aes-128-ecb', key, '');
-    return cip.update(pt) + cip.final();
+    cip.setAutoPadding(false);
+    return Buffer.concat([cip.update(pt), cip.final()]);
 }
 
-set1.ecb_decrypt = (pt, key) => {
+set1.ecb_decrypt = (ct, key) => {
     let cip = crypto.createDecipheriv('aes-128-ecb', key, '');
-    return cip.update(pt) + cip.final();
+    cip.setAutoPadding(false);
+    return Buffer.concat([cip.update(ct), cip.final()]);
 }
 
 set1.tests.push(() => {
